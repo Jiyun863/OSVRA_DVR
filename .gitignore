@@ -1,0 +1,55 @@
+# ------------------------------
+# Python cache & bytecode
+# ------------------------------
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+.history/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# IDE / Editor settings
+.vscode/
+.idea/
+
+# ------------------------------
+# Python cache & bytecode
+# ------------------------------
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.so
+*.pyd
+.history/
+
+# ------------------------------
+# Project-specific
+# ------------------------------
+resources/masks/
+resources/Rendered_Image/
+resources/Points/
+resources/Volume_Data/*.raw
+# macOS metadata
+.DS_Store
+**/.DS_Store
+._*
+**/._*

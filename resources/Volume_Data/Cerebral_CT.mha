@@ -1,0 +1,7 @@
+NDims = 3
+DimSize = 512 512 174
+ElementType = MET_USHORT
+ElementByteOrderMSB = True
+ElementSize = 1.0 1.0 1.0
+ElementSpacing = 1.0 1.0 2.0
+ElementDataFile = Cerebral_CT.raw

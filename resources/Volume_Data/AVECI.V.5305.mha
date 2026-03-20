@@ -1,0 +1,7 @@
+NDims = 3
+DimSize = 512 512 461
+ElementType = MET_USHORT
+ElementByteOrderMSB = True
+ElementSize = 0.71875 0.71875 1.5
+ElementSpacing = 0.71875 0.71875 1.5
+ElementDataFile = AVECI.V.5305.raw

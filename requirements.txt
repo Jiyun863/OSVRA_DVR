@@ -1,0 +1,8 @@
+huggingface_hub
+PyQt6
+pillow
+vtk
+scipy
+nibabel
+opencv-python
+matplotlib
