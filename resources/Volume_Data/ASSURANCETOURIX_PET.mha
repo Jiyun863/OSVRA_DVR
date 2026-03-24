@@ -1,0 +1,7 @@
+NDims = 3
+DimSize = 512 512 226
+ElementType = MET_USHORT
+ElementByteOrderMSB = True
+ElementSize = 0.9765625 0.9765625 1.0
+ElementSpacing = 0.9765625 0.9765625 3.0
+ElementDataFile = ASSURANCETOURIX_PET.raw

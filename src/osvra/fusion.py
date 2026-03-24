@@ -57,7 +57,7 @@ class FusionRenderer:
 
         # Over compositing: PET over CT
         fused_rgb = pet_rgba[:, :, :3] * pet_alpha + ct_aug_rgba[:, :, :3] * (1.0 - pet_alpha)
-        fused_a = pet_rgba[:, :, 3:4] * pet_alpha + ct_aug_rgba[:, :, 3:4] * (1.0 - pet_alpha)
+        fused_a = pet_alpha + ct_aug_rgba[:, :, 3:4] * (1.0 - pet_alpha)
 
         fused = np.concatenate([fused_rgb, fused_a], axis=2)
         return np.clip(fused, 0, 1).astype(np.float32)

@@ -10,74 +10,8 @@ from PyQt6.QtWidgets import (
     QFrame, QSizePolicy, QDoubleSpinBox, QSpinBox,
     QGroupBox, QProgressBar,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QFont
-
-
-class SlicePreviewCanvas(QLabel):
-    """SOI PET 슬라이스 즉시 미리보기 위젯"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumHeight(120)
-        self.setMaximumHeight(200)
-        self.setStyleSheet(
-            "background-color: #1a1a1a; border: 1px solid #444;"
-            "color: #555; font-size: 11px;"
-        )
-        self.setText("SOI preview")
-        self._pixmap_cache = None
-        self._img_data_ref = None
-        self._in_resize = False
-
-    def display_preview(self, rgba_array: np.ndarray):
-        """TF 적용된 RGBA float [0,1] array를 검은 배경 위에 alpha premultiply로 표시
-
-        Args:
-            rgba_array: (H, W, 4) float [0, 1]
-        """
-        if rgba_array is None or rgba_array.size == 0:
-            self.setText("No slice data")
-            self._pixmap_cache = None
-            self._img_data_ref = None
-            return
-
-        rgba = np.clip(rgba_array, 0, 1)
-        # Alpha premultiply over black background: RGB = RGB * A
-        rgb = rgba[..., :3] * rgba[..., 3:4]
-        img_uint8 = (rgb * 255).astype(np.uint8)
-        h, w = img_uint8.shape[:2]
-
-        # Pad to 4 channels (RGBA) with full opacity for QImage
-        alpha_full = np.full((h, w, 1), 255, dtype=np.uint8)
-        img_rgba = np.concatenate([img_uint8, alpha_full], axis=2)
-
-        self._img_data_ref = np.ascontiguousarray(img_rgba)
-        stride = self._img_data_ref.strides[0]
-        qimage = QImage(self._img_data_ref.data, w, h, stride,
-                        QImage.Format.Format_RGBA8888)
-        qimage = qimage.copy()
-        self._pixmap_cache = QPixmap.fromImage(qimage)
-        self._update_display()
-
-    def _update_display(self):
-        if self._pixmap_cache is None:
-            return
-        self.setText("")
-        scaled = self._pixmap_cache.scaled(
-            self.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.setPixmap(scaled)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if not self._in_resize:
-            self._in_resize = True
-            self._update_display()
-            self._in_resize = False
 
 
 class HistogramCanvas(QLabel):
@@ -335,10 +269,6 @@ class OSVRAPanel(QWidget):
         self.slice_spin.valueChanged.connect(self._on_slice_changed)
         slice_row.addWidget(self.slice_spin, 1)
         soi_layout.addLayout(slice_row)
-
-        # SOI slice preview
-        self.slice_preview = SlicePreviewCanvas()
-        soi_layout.addWidget(self.slice_preview)
 
         content_layout.addWidget(soi_group)
 

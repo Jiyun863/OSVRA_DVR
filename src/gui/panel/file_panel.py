@@ -120,9 +120,10 @@ class FilePanel(BasePanel):
     def load_ct_data(self):
         """★ CT 볼륨 로드"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Volume Data", "./resources/Volume_Data", 
-            "All Supported Files (*.nii *.nii.gz *.npy *.raw *.dat);;"
+            self, "Load Volume Data", "./resources/Volume_Data",
+            "All Supported Files (*.nii *.nii.gz *.npy *.raw *.dat *.mha *.mhd);;"
             "Volume Files (*.nii *.nii.gz *.npy);;"
+            "MetaImage Files (*.mha *.mhd);;"
             "Raw Files (*.raw *.dat);;"
             "All Files (*)"
         )
@@ -152,9 +153,10 @@ class FilePanel(BasePanel):
     def load_pet_data(self):
         """★ PET 볼륨 로드"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Volume Data", "./resources/Volume_Data", 
-            "All Supported Files (*.nii *.nii.gz *.npy *.raw *.dat);;"
+            self, "Load Volume Data", "./resources/Volume_Data",
+            "All Supported Files (*.nii *.nii.gz *.npy *.raw *.dat *.mha *.mhd);;"
             "Volume Files (*.nii *.nii.gz *.npy);;"
+            "MetaImage Files (*.mha *.mhd);;"
             "Raw Files (*.raw *.dat);;"
             "All Files (*)"
         )

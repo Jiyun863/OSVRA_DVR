@@ -7,6 +7,7 @@ import numpy as np
 from .nifti_loader import NIfTILoader
 from .raw_loader import RawLoader
 from .npy_loader import NpyLoader
+from .mata_loader import MetaImageLoader
 from .volume_processor import VolumeProcessor
 
 
@@ -20,6 +21,8 @@ class VolumeLoader:
             '.npy': NpyLoader(),
             '.raw': RawLoader(),
             '.dat': RawLoader(),
+            '.mha': MetaImageLoader(),
+            '.mhd': MetaImageLoader(),
         }
         self.processor = VolumeProcessor()
     

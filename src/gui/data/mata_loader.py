@@ -2,7 +2,7 @@ import numpy as np
 import SimpleITK as sitk
 from typing import Tuple, Optional
 
-from base_volume_loader import BaseVolumeLoader
+from .base_loader import BaseVolumeLoader
 
 
 class MetaImageLoader(BaseVolumeLoader):

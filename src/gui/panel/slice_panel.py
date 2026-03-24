@@ -1,113 +1,31 @@
-"""
-2D Slice Viewer Panel
-볼륨 데이터를 Axial / Sagittal / Coronal 뷰로 슬라이싱하여 표시하는 패널
-right_container 에 배치하여 사용
+"""2D Slice Viewer Panel — vtkImageReslice 기반
+PET 볼륨 데이터를 Axial / Coronal / Sagittal 뷰로 슬라이싱하여
+VTK 렌더링 파이프라인으로 표시하는 패널.
+right_container 에 배치하여 사용.
 """
 
 import numpy as np
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QSlider, QButtonGroup, QFrame, QSizePolicy
+    QPushButton, QSlider, QButtonGroup, QFrame, QSizePolicy,
+    QFileDialog,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QFont
+from PyQt6.QtCore import Qt, pyqtSignal
+
+import vtk
+from vtkmodules.util import numpy_support
+from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
 
-# ──────────────────────────────────────────────────────────────
-# SliceCanvas  :  QLabel 기반 이미지 표시 위젯
-# ──────────────────────────────────────────────────────────────
-class SliceCanvas(QLabel):
-    """슬라이스 이미지를 렌더링하는 캔버스"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setMinimumSize(200, 200)
-        self.setStyleSheet("background-color: #111111; border: 1px solid #444;")
-
-        self._pixmap_cache = None  # 원본 픽스맵 캐시
-
-        self._show_placeholder()
-
-    # ── 외부 API ──────────────────────────────────────────────
-
-    def set_slice_array(self, arr: np.ndarray):
-        """
-        arr : 2D numpy array (float 또는 int)
-              값 범위는 임의 – 내부에서 [0, 255] 로 정규화
-        """
-        if arr is None or arr.size == 0:
-            self._show_placeholder()
-            return
-
-        img_uint8 = self._normalize(arr)
-        h, w = img_uint8.shape
-
-        # numpy 배열을 contiguous로 보장하고 멤버에 보관 (GC 방지)
-        self._img_data_ref = np.ascontiguousarray(img_uint8)
-        qimage = QImage(self._img_data_ref.data, w, h, w, QImage.Format.Format_Grayscale8)
-        qimage = qimage.copy()  # QImage가 자체 메모리 소유
-        self._pixmap_cache = QPixmap.fromImage(qimage)
-        self._update_display()
-
-    def clear(self):
-        self._pixmap_cache = None
-        self._show_placeholder()
-
-    # ── 내부 헬퍼 ─────────────────────────────────────────────
-
-    def _normalize(self, arr: np.ndarray) -> np.ndarray:
-        arr = arr.astype(np.float32)
-        mn, mx = arr.min(), arr.max()
-        if mx > mn:
-            arr = (arr - mn) / (mx - mn) * 255.0
-        else:
-            arr = np.zeros_like(arr)
-        return np.clip(arr, 0, 255).astype(np.uint8)
-
-    def _show_placeholder(self):
-        self.setText("No Volume Data")
-        self.setStyleSheet(
-            "background-color: #111111; border: 1px solid #444;"
-            "color: #555; font-size: 14px;"
-        )
-        self._pixmap_cache = None
-
-    def _update_display(self):
-        if self._pixmap_cache is None:
-            return
-        self.setText("")
-        self.setStyleSheet("background-color: #111111; border: 1px solid #444;")
-        scaled = self._pixmap_cache.scaled(
-            self.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.setPixmap(scaled)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._update_display()
-
-
-# ──────────────────────────────────────────────────────────────
-# SliceViewerPanel  :  메인 패널
-# ──────────────────────────────────────────────────────────────
 class SliceViewerPanel(QWidget):
     """
-    Axial / Sagittal / Coronal 슬라이스 뷰어 패널.
-    main_window 의 right_container 에 addWidget 하여 사용.
+    PET 전용 Axial / Coronal / Sagittal 슬라이스 뷰어.
+    vtkImageReslice → vtkImageMapToColors → vtkImageActor 파이프라인 사용.
+    고정 inverted grayscale TF 사용 (intensity 0→black/opaque, max→white/transparent).
     """
 
-    # 외부로 현재 슬라이스 인덱스를 알릴 시그널 (필요 시 활용)
     slice_changed = pyqtSignal(str, int)   # (view_axis, index)
 
-    # 축 이름 → numpy axis 인덱스 매핑
-    #   볼륨 shape : (X, Y, Z)  기준 (실측 확인 결과)
-    #   Axial    → axis 2  (Z 방향 슬라이싱)
-    #   Coronal  → axis 1  (Y 방향 슬라이싱)
-    #   Sagittal → axis 0  (X 방향 슬라이싱)
     _AXIS_MAP = {
         "Axial":    2,   # Z 축 슬라이싱
         "Coronal":  1,   # Y 축 슬라이싱
@@ -115,11 +33,29 @@ class SliceViewerPanel(QWidget):
     }
     _AXIS_ORDER = ["Axial", "Coronal", "Sagittal"]
 
+    # 고정 inverted grayscale TF: [position, R, G, B, alpha]
+    _INVERTED_GRAY_TF = [
+        [0.0, 1.0, 1.0, 1.0, 1.0],  # intensity 0 → white, alpha=1
+        [1.0, 0.0, 0.0, 0.0, 0.0],  # intensity 1 → black, alpha=0
+    ]
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.volume_data: np.ndarray | None = None
+        self.voxel_spacing = (1.0, 1.0, 1.0)
         self.current_axis: str = "Axial"
         self.current_index: int = 0
+
+        self._has_data = False
+        self._vtk_initialized = False
+
+        # VTK 파이프라인 객체
+        self._pet_vtk_image = None
+        self._reslice = None
+        self._color_mapper = None
+        self._image_actor = None
+        self._lut = None
+        self._placeholder_actor = None
 
         self._build_ui()
 
@@ -133,9 +69,32 @@ class SliceViewerPanel(QWidget):
         # 제목
         title = QLabel("🔬  2D Slice Viewer")
         title.setStyleSheet(
-            "font-size: 16px; font-weight: bold; padding: 6px 4px;"
+            "font-size: 18px; font-weight: bold; padding: 10px;"
         )
         root.addWidget(title)
+
+        # ── VTK 렌더 위젯 ──────────────────────────────────────
+        self.vtk_widget = QVTKRenderWindowInteractor(self)
+        self.vtk_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.vtk_widget.setMinimumSize(200, 200)
+        root.addWidget(self.vtk_widget, stretch=1)
+
+        # VTK 렌더러 설정 — 흰색 배경
+        self.renderer = vtk.vtkRenderer()
+        self.renderer.SetBackground(1.0, 1.0, 1.0)
+        self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
+
+        # 인터랙션: 휠 줌만 허용
+        interactor = self.vtk_widget.GetRenderWindow().GetInteractor()
+        style = vtk.vtkInteractorStyleUser()
+        interactor.SetInteractorStyle(style)
+        interactor.AddObserver("MouseWheelForwardEvent", self._on_wheel_forward)
+        interactor.AddObserver("MouseWheelBackwardEvent", self._on_wheel_backward)
+
+        # placeholder 텍스트
+        self._setup_placeholder()
 
         # ── 뷰 선택 버튼 3개 ──────────────────────────────────
         btn_row = QHBoxLayout()
@@ -160,9 +119,22 @@ class SliceViewerPanel(QWidget):
 
         root.addLayout(btn_row)
 
-        # ── 캔버스 ────────────────────────────────────────────
-        self.canvas = SliceCanvas()
-        root.addWidget(self.canvas, stretch=1)
+        # ── Save Image 버튼 ──────────────────────────────────
+        save_row = QHBoxLayout()
+        save_row.setSpacing(4)
+        save_row.addStretch()
+        self._save_btn = QPushButton("Save Image")
+        self._save_btn.setFixedHeight(28)
+        self._save_btn.setStyleSheet(
+            "QPushButton { background-color: #3a7d3a; color: white;"
+            "font-weight: bold; border-radius: 4px; padding: 0 12px; }"
+            "QPushButton:hover { background-color: #4a9a4a; }"
+            "QPushButton:disabled { background-color: #555; color: #888; }"
+        )
+        self._save_btn.setEnabled(False)
+        self._save_btn.clicked.connect(self._on_save_image)
+        save_row.addWidget(self._save_btn)
+        root.addLayout(save_row)
 
         # ── 슬라이더 영역 ─────────────────────────────────────
         slider_frame = QFrame()
@@ -212,7 +184,7 @@ class SliceViewerPanel(QWidget):
         """)
         slider_layout.addWidget(self.slice_slider)
 
-        # 첫/끝 이동 버튼
+        # 네비게이션 버튼
         nav_row = QHBoxLayout()
         nav_row.setSpacing(4)
         for label, delta in [("◀◀ First", "first"), ("◀ Prev", -1),
@@ -228,6 +200,20 @@ class SliceViewerPanel(QWidget):
         slider_layout.addLayout(nav_row)
 
         root.addWidget(slider_frame)
+
+    def _setup_placeholder(self):
+        """빈 상태 placeholder 텍스트 액터 (NormalizedViewport 좌표로 항상 중앙)"""
+        self._placeholder_actor = vtk.vtkTextActor()
+        self._placeholder_actor.SetInput("No PET Volume Data")
+        prop = self._placeholder_actor.GetTextProperty()
+        prop.SetFontSize(18)
+        prop.SetColor(0.7, 0.7, 0.7)
+        prop.SetJustificationToCentered()
+        prop.SetVerticalJustificationToCentered()
+        coord = self._placeholder_actor.GetPositionCoordinate()
+        coord.SetCoordinateSystemToNormalizedViewport()
+        coord.SetValue(0.5, 0.5)
+        self.renderer.AddActor2D(self._placeholder_actor)
 
     # ── 스타일 헬퍼 ───────────────────────────────────────────
 
@@ -246,41 +232,268 @@ class SliceViewerPanel(QWidget):
 
     # ── 공개 API ──────────────────────────────────────────────
 
-    def set_volume_data(self, volume_data: np.ndarray):
-        """
-        볼륨 데이터 설정.
-        nibabel 기준 shape : (X, Y, Z)
-        """
-        if volume_data is None:
-            self.volume_data = None
-            self.canvas.clear()
-            self._reset_slider()
-            return
+    def set_pet_data(self, volume_data: np.ndarray, voxel_spacing: tuple):
+        """PET 볼륨 데이터 설정, VTK 파이프라인 구성, 고정 inverted grayscale TF 적용"""
+        self._ensure_vtk_initialized()
 
         self.volume_data = volume_data
+        self.voxel_spacing = voxel_spacing
 
-        # ── 진단 출력 (방향 디버깅용) ─────────────────────────
-        print(f"[SliceViewer] volume shape : {volume_data.shape}")
-        print(f"[SliceViewer] dtype        : {volume_data.dtype}")
-        print(f"[SliceViewer] value range  : {volume_data.min():.1f} ~ {volume_data.max():.1f}")
-        print(f"[SliceViewer] Axial slices (axis2): {volume_data.shape[2]}")
-        print(f"[SliceViewer] Coronal slices (axis1): {volume_data.shape[1]}")
-        print(f"[SliceViewer] Sagittal slices (axis0): {volume_data.shape[0]}")
-        # ──────────────────────────────────────────────────────
+        print(f"[SliceViewer] PET volume shape : {volume_data.shape}")
+        print(f"[SliceViewer] voxel spacing    : {voxel_spacing}")
+        print(f"[SliceViewer] value range      : {volume_data.min():.3f} ~ {volume_data.max():.3f}")
 
+        # numpy → vtkImageData
+        self._pet_vtk_image = self._numpy_to_vtk_imagedata(volume_data, voxel_spacing)
+        if self._pet_vtk_image is None:
+            return
+
+        # LUT 생성 — 고정 inverted grayscale TF 사용
+        self._lut = self._build_vtk_lut_from_tf_nodes(self._INVERTED_GRAY_TF)
+
+        # 파이프라인 구성
+        self._build_vtk_pipeline()
+        self._has_data = True
+
+        # placeholder 제거
+        if self._placeholder_actor:
+            self.renderer.RemoveActor2D(self._placeholder_actor)
+
+        # Save 버튼 활성화
+        self._save_btn.setEnabled(True)
+
+        # 초기 슬라이스 표시
         self._switch_axis(self.current_axis, reset_index=True)
 
-    def clear(self):
-        """볼륨 데이터 해제 및 초기화"""
-        self.volume_data = None
-        self.canvas.clear()
-        self._reset_slider()
+    def set_axis_and_index(self, axis: str, index: int):
+        """외부에서 축/인덱스 설정 (OSVRA 동기화용). slice_changed 미발신."""
+        if axis not in self._AXIS_MAP:
+            return
+        # Update button styles
+        for name, btn in self._view_buttons.items():
+            btn.setStyleSheet(self._btn_style(active=(name == axis)))
+        self._view_buttons[axis].setChecked(True)
 
-    # ── 내부 로직 ─────────────────────────────────────────────
+        axis_changed = (axis != self.current_axis)
+        self.current_axis = axis
+        self.current_index = index
+
+        axis_labels = {
+            "Axial": "Axial  (Z-axis)",
+            "Coronal": "Coronal  (Y-axis)",
+            "Sagittal": "Sagittal  (X-axis)",
+        }
+        self.axis_label.setText(axis_labels[axis])
+
+        if not self._has_data or self.volume_data is None:
+            return
+
+        axis_idx = self._AXIS_MAP[axis]
+        n_slices = self.volume_data.shape[axis_idx]
+        self.current_index = max(0, min(index, n_slices - 1))
+
+        # Update slider without signals
+        self.slice_slider.blockSignals(True)
+        self.slice_slider.setMinimum(0)
+        self.slice_slider.setMaximum(n_slices - 1)
+        self.slice_slider.setValue(self.current_index)
+        self.slice_slider.setEnabled(True)
+        self.slice_slider.blockSignals(False)
+
+        # Update reslice
+        if self._reslice:
+            if axis_changed:
+                axes = self._get_reslice_axes(axis)
+                self._reslice.SetResliceAxes(axes)
+            origin = self._get_reslice_origin(axis, self.current_index)
+            self._reslice.SetResliceAxesOrigin(*origin)
+            self._reslice.Update()
+
+        self.index_label.setText(f"{self.current_index} / {n_slices - 1}")
+        self._render()
+        if axis_changed:
+            self._reset_camera()
+
+    def clear(self):
+        """PET 데이터 해제 및 파이프라인 정리"""
+        self._teardown_vtk_pipeline()
+        self.volume_data = None
+        self._pet_vtk_image = None
+        self._has_data = False
+
+        # Save 버튼 비활성화
+        self._save_btn.setEnabled(False)
+
+        # placeholder 복원
+        if self._placeholder_actor is None:
+            self._setup_placeholder()
+        else:
+            self.renderer.AddActor2D(self._placeholder_actor)
+        self._center_placeholder()
+
+        self._reset_slider()
+        self._render()
+
+    def cleanup(self):
+        """위젯 종료 시 VTK 리소스 정리"""
+        self._teardown_vtk_pipeline()
+        if self._placeholder_actor:
+            self.renderer.RemoveActor2D(self._placeholder_actor)
+            self._placeholder_actor = None
+        try:
+            iren = self.vtk_widget.GetRenderWindow().GetInteractor()
+            if iren:
+                iren.TerminateApp()
+        except Exception:
+            pass
+
+    # ── VTK 파이프라인 ────────────────────────────────────────
+
+    def _ensure_vtk_initialized(self):
+        """VTK 인터랙터 초기화 (최초 1회)"""
+        if not self._vtk_initialized:
+            self.vtk_widget.GetRenderWindow().GetInteractor().Initialize()
+            self._vtk_initialized = True
+
+    def _build_vtk_pipeline(self):
+        """vtkImageReslice → vtkImageMapToColors → vtkImageActor 파이프라인 구성"""
+        self._teardown_vtk_pipeline()
+
+        # 1. Reslice
+        self._reslice = vtk.vtkImageReslice()
+        self._reslice.SetInputData(self._pet_vtk_image)
+        self._reslice.SetOutputDimensionality(2)
+        self._reslice.SetInterpolationModeToLinear()
+
+        # 초기 축 설정
+        axes = self._get_reslice_axes(self.current_axis)
+        self._reslice.SetResliceAxes(axes)
+
+        # 2. Color Mapper
+        self._color_mapper = vtk.vtkImageMapToColors()
+        self._color_mapper.SetLookupTable(self._lut)
+        self._color_mapper.SetInputConnection(self._reslice.GetOutputPort())
+        self._color_mapper.SetOutputFormatToRGB()
+
+        # 3. Image Actor
+        self._image_actor = vtk.vtkImageActor()
+        self._image_actor.GetMapper().SetInputConnection(
+            self._color_mapper.GetOutputPort()
+        )
+
+        self.renderer.AddActor(self._image_actor)
+
+    def _teardown_vtk_pipeline(self):
+        """VTK 파이프라인 객체 해제"""
+        if self._image_actor:
+            self.renderer.RemoveActor(self._image_actor)
+        self._image_actor = None
+        self._color_mapper = None
+        self._reslice = None
+
+    def _numpy_to_vtk_imagedata(self, numpy_array, voxel_spacing):
+        """numpy float32 배열을 vtkImageData로 변환 (Fortran order)"""
+        try:
+            vtk_data = vtk.vtkImageData()
+            dims = (numpy_array.shape[0], numpy_array.shape[1], numpy_array.shape[2])
+            vtk_data.SetDimensions(dims)
+            vtk_data.SetSpacing(voxel_spacing)
+            vtk_data.SetOrigin(0.0, 0.0, 0.0)
+
+            flat_data = numpy_array.ravel(order='F').astype(np.float32)
+            vtk_array = numpy_support.numpy_to_vtk(
+                flat_data, deep=True, array_type=vtk.VTK_FLOAT,
+            )
+            vtk_array.SetName("scalars")
+            vtk_array.SetNumberOfComponents(1)
+            vtk_data.GetPointData().SetScalars(vtk_array)
+            return vtk_data
+        except Exception as e:
+            print(f"[SliceViewer] VTK 데이터 변환 실패: {e}")
+            return None
+
+    def _build_vtk_lut_from_tf_nodes(self, tf_nodes):
+        """TF 컨트롤 포인트를 256-entry vtkLookupTable로 변환"""
+        lut = vtk.vtkLookupTable()
+        lut.SetNumberOfTableValues(256)
+        lut.SetRange(0.0, 1.0)
+        lut.Build()
+
+        if not tf_nodes or len(tf_nodes) < 2:
+            # 기본 그레이스케일
+            for i in range(256):
+                v = i / 255.0
+                lut.SetTableValue(i, v, v, v, 1.0)
+            lut.Modified()
+            return lut
+
+        sorted_nodes = sorted(tf_nodes, key=lambda x: x[0])
+        positions = [n[0] for n in sorted_nodes]
+        reds = [n[1] for n in sorted_nodes]
+        greens = [n[2] for n in sorted_nodes]
+        blues = [n[3] for n in sorted_nodes]
+        alphas = [n[4] for n in sorted_nodes]
+
+        x = np.linspace(0, 1, 256)
+        r_lut = np.interp(x, positions, reds)
+        g_lut = np.interp(x, positions, greens)
+        b_lut = np.interp(x, positions, blues)
+        a_lut = np.interp(x, positions, alphas)
+
+        for i in range(256):
+            lut.SetTableValue(i, r_lut[i], g_lut[i], b_lut[i], a_lut[i])
+
+        lut.Modified()
+        return lut
+
+    # ── Reslice 축/원점 설정 ──────────────────────────────────
+
+    def _get_reslice_axes(self, axis_name: str) -> vtk.vtkMatrix4x4:
+        """축별 reslice 4x4 행렬 반환"""
+        m = vtk.vtkMatrix4x4()
+
+        if axis_name == "Axial":
+            # 출력 X=입력 X, 출력 Y=입력 Y, 법선=Z
+            m.DeepCopy((
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, 0,
+                0, 0, 0, 1,
+            ))
+        elif axis_name == "Coronal":
+            # 출력 X=입력 X, 출력 Y=입력 Z, 법선=Y
+            m.DeepCopy((
+                1, 0, 0, 0,
+                0, 0, 1, 0,
+                0, 1, 0, 0,
+                0, 0, 0, 1,
+            ))
+        elif axis_name == "Sagittal":
+            # 출력 X=입력 Y, 출력 Y=입력 Z, 법선=X
+            m.DeepCopy((
+                0, 0, 1, 0,
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 0, 1,
+            ))
+
+        return m
+
+    def _get_reslice_origin(self, axis_name: str, index: int) -> tuple:
+        """축과 인덱스로부터 reslice 원점 좌표 계산"""
+        sx, sy, sz = self.voxel_spacing
+        if axis_name == "Axial":
+            return (0, 0, index * sz)
+        elif axis_name == "Coronal":
+            return (0, index * sy, 0)
+        elif axis_name == "Sagittal":
+            return (index * sx, 0, 0)
+        return (0, 0, 0)
+
+    # ── 슬라이스 네비게이션 ───────────────────────────────────
 
     def _on_view_clicked(self, axis_name: str):
         """뷰 버튼 클릭"""
-        # 버튼 스타일 갱신
         for name, btn in self._view_buttons.items():
             btn.setStyleSheet(self._btn_style(active=(name == axis_name)))
         self._switch_axis(axis_name, reset_index=True)
@@ -296,7 +509,7 @@ class SliceViewerPanel(QWidget):
         }
         self.axis_label.setText(axis_labels[axis_name])
 
-        if self.volume_data is None:
+        if not self._has_data or self.volume_data is None:
             self._reset_slider()
             return
 
@@ -313,14 +526,20 @@ class SliceViewerPanel(QWidget):
         self.slice_slider.setEnabled(True)
         self.slice_slider.blockSignals(False)
 
+        # reslice 축 업데이트
+        if self._reslice:
+            axes = self._get_reslice_axes(axis_name)
+            self._reslice.SetResliceAxes(axes)
+
         self._render_slice()
+        self._reset_camera()
 
     def _on_slider_changed(self, value: int):
         self.current_index = value
         self._render_slice()
 
     def _navigate(self, delta):
-        if self.volume_data is None:
+        if not self._has_data or self.volume_data is None:
             return
         axis_idx = self._AXIS_MAP[self.current_axis]
         n = self.volume_data.shape[axis_idx]
@@ -330,35 +549,39 @@ class SliceViewerPanel(QWidget):
             new_idx = n - 1
         else:
             new_idx = max(0, min(self.current_index + delta, n - 1))
-        self.slice_slider.setValue(new_idx)  # valueChanged 가 _render_slice 호출
+        self.slice_slider.setValue(new_idx)
 
     def _render_slice(self):
-        if self.volume_data is None:
+        """현재 축과 인덱스로 reslice 원점 업데이트 후 렌더"""
+        if not self._has_data or self._reslice is None:
             return
 
         axis_idx = self._AXIS_MAP[self.current_axis]
         n_slices = self.volume_data.shape[axis_idx]
         idx = max(0, min(self.current_index, n_slices - 1))
 
-        slice_2d = np.take(self.volume_data, idx, axis=axis_idx)
+        origin = self._get_reslice_origin(self.current_axis, idx)
+        self._reslice.SetResliceAxesOrigin(*origin)
+        self._reslice.Update()
 
-        if self.current_axis == "Axial":
-            slice_2d = slice_2d.T          # (X,Y) → (Y,X)
-            # Z=0=Superior이고 Coronal이 맞으므로 Axial도 flip 불필요
-
-        elif self.current_axis == "Coronal":
-            slice_2d = slice_2d.T          # (X,Z) → (Z,X)
-            # 이미 방향 맞음
-
-        elif self.current_axis == "Sagittal":
-            # flipud 제거: Z=0=Superior가 이미 위에 있으므로 뒤집지 않음
-            slice_2d = slice_2d      # (Y,Z) → (Z,Y)
-
-        self.canvas.set_slice_array(slice_2d)
+        self._render()
 
         # 레이블 갱신
         self.index_label.setText(f"{idx} / {n_slices - 1}")
         self.slice_changed.emit(self.current_axis, idx)
+
+    def _render(self):
+        """VTK 렌더 윈도우 렌더"""
+        try:
+            self.vtk_widget.GetRenderWindow().Render()
+        except Exception:
+            pass
+
+    def _reset_camera(self):
+        """2D 뷰에 맞게 카메라 리셋"""
+        self.renderer.GetActiveCamera().ParallelProjectionOn()
+        self.renderer.ResetCamera()
+        self._render()
 
     def _reset_slider(self):
         self.slice_slider.blockSignals(True)
@@ -368,3 +591,57 @@ class SliceViewerPanel(QWidget):
         self.slice_slider.setEnabled(False)
         self.slice_slider.blockSignals(False)
         self.index_label.setText("0 / 0")
+
+    def _center_placeholder(self):
+        """placeholder 위치 갱신 (NormalizedViewport이므로 render만 호출)"""
+        self._render()
+
+    # ── 휠 줌 핸들러 ──────────────────────────────────────────
+
+    def _on_wheel_forward(self, obj, event):
+        """마우스 휠 앞으로 → 줌 인 (ParallelScale ×0.9)"""
+        cam = self.renderer.GetActiveCamera()
+        cam.SetParallelScale(cam.GetParallelScale() * 0.9)
+        self._render()
+
+    def _on_wheel_backward(self, obj, event):
+        """마우스 휠 뒤로 → 줌 아웃 (ParallelScale ×1.1)"""
+        cam = self.renderer.GetActiveCamera()
+        cam.SetParallelScale(cam.GetParallelScale() * 1.1)
+        self._render()
+
+    # ── Save Image ────────────────────────────────────────────
+
+    def _on_save_image(self):
+        """현재 뷰를 PNG로 저장"""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Slice Image", "", "PNG Files (*.png);;All Files (*)"
+        )
+        if not path:
+            return
+
+        win = self.vtk_widget.GetRenderWindow()
+        win.Render()
+
+        w2i = vtk.vtkWindowToImageFilter()
+        w2i.SetInput(win)
+        w2i.SetInputBufferTypeToRGBA()
+        w2i.ReadFrontBufferOff()
+        w2i.Update()
+
+        writer = vtk.vtkPNGWriter()
+        writer.SetFileName(path)
+        writer.SetInputConnection(w2i.GetOutputPort())
+        writer.Write()
+        print(f"[SliceViewer] Image saved: {path}")
+
+    # ── 이벤트 ────────────────────────────────────────────────
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._ensure_vtk_initialized()
+        self._center_placeholder()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._center_placeholder()

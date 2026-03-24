@@ -35,14 +35,14 @@ VolumeProcessor (reshape, normalize axis order) →
 MainWindow.on_ct_loaded() / on_pet_loaded() →
   ├─ RenderingPanel: numpy → vtkImageData → GPU ray-casting
   ├─ TFPanel: update histogram display
-  └─ SlicePanel: extract 2D axial/sagittal/coronal slices
+  └─ SlicePanel: vtkImageReslice 기반 PET 슬라이스 뷰어 (TF 동기화)
 ```
 
 ### VTK Rendering Pipeline (renderer_widget.py)
 
 Uses `vtkMultiVolume` with `vtkOpenGLGPUVolumeRayCastMapper`:
 - **Port 0:** CT volume with intensity-based transfer function
-- **Port 1:** PET volume with hot colormap
+- **Port 1:** PET volume with PET Transfer Function
 
 Transfer function changes flow: `TransferFunctionWidget` → signal → `MainWindow.on_tf_changed()` → `RenderingPanel.update_transfer_function()` → updates `vtkVolumeProperty` color/opacity functions in-place.
 
@@ -53,6 +53,10 @@ Extracted subsystems attached to `VTKVolumeRenderer`:
 - `ClippingManager` — 6-plane axis-aligned clipping (min/max per X/Y/Z)
 - `CameraController` — VTK camera state, spherical coordinates, zoom
 - `ScreenshotManager` — Save rendered scene to image
+
+### Slice Viewer (`src/gui/panel/slice_panel.py`)
+
+PET 전용 2D 슬라이스 뷰어. VTK 파이프라인: `vtkImageReslice` → `vtkImageMapToColors` → `vtkImageActor`. PET TF와 동기화되며 인터랙션(회전/줌) 비활성화.
 
 ### Transfer Function System
 
@@ -75,10 +79,11 @@ Extracted subsystems attached to `VTKVolumeRenderer`:
 
 - `file_panel.ct_loaded` → `on_ct_loaded()` — loads primary CT volume
 - `file_panel.pet_loaded` → `on_pet_loaded()` — loads secondary PET overlay
+- `file_panel.pet_cleared` → `on_pet_cleared()` — clears PET overlay and slice viewer
 - `tf_panel.tf_changed` → `on_tf_changed()` — updates CT transfer function
+- `tf_panel.pet_tf_changed` → `on_pet_tf_changed()` — updates PET TF and slice viewer 동기화
 - `tf_panel.shading_changed` → `on_shading_changed()` — toggles Phong shading
 - `tf_panel.clipping_changed` → `on_clipping_changed()` — updates clip planes
-- `rendering_panel.vtk_renderer.point_2d_picked` → `on_point_2d_picked()` — point picking for TF optimization
 
 ### TF Optimization
 
@@ -99,3 +104,8 @@ Occlusion and Slice-Based Volume Rendering Augmentation for PET-CT fusion:
 Key design: PET uses the user's Transfer Function (from TFPanel PET tab), not a matplotlib colormap. TF LUT building is shared in `VolumeBridge.build_tf_luts()`.
 
 QImage usage: always call `.copy()` after constructing from `tobytes()` to prevent dangling pointer segfaults.
+
+### OSVRA Bug Fixes (2026-03-20)
+
+- `logistic_weight.py:43` — sign error `exp(B*d)` → `exp(-B*d)` 수정
+- `fusion.py:60` — `fuse_alpha_blend()` alpha squared 버그 수정 (미사용 함수)

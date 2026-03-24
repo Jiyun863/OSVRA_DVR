@@ -160,8 +160,7 @@ class VolumeRenderingMainWindow(QMainWindow):
         self.osvra_panel.render_requested.connect(self._run_osvra_pipeline)
         self.osvra_panel.fusion_ratio_changed.connect(self._on_osvra_fusion_ratio_changed)
         self.osvra_panel.debug_requested.connect(self._on_debug_view_clicked)
-        self.osvra_panel.soi_changed.connect(self._update_osvra_preview)
-        self.tf_panel.pet_tf_changed.connect(self._on_pet_tf_changed_for_preview)
+        self.osvra_panel.soi_changed.connect(self._on_osvra_soi_changed)
 
     def on_set_mode_changed(self, enabled):
         """Set 모드 변경 시 데이터 및 화면 강제 초기화"""
@@ -221,8 +220,6 @@ class VolumeRenderingMainWindow(QMainWindow):
         self.tf_panel.set_volume_data(volume_data)
         self.tf_panel.reset_clipping_safe()
 
-        self.slice_viewer.set_volume_data(volume_data)
-
         # OSVRA: update slice range based on current axis
         if hasattr(self, 'osvra_panel'):
             axis_map = {"Axial": 2, "Coronal": 1, "Sagittal": 0}
@@ -242,7 +239,7 @@ class VolumeRenderingMainWindow(QMainWindow):
         )
         self.tf_panel.set_pet_volume_data(volume_data)
 
-        self.slice_viewer.set_volume_data(volume_data)
+        self.slice_viewer.set_pet_data(volume_data, self.pet_voxel_spacing)
 
         shape_str = "×".join(str(s) for s in volume_data.shape)
         self.statusBar().showMessage(f"PET loaded  {shape_str}  (Z×Y×X)")
@@ -251,6 +248,7 @@ class VolumeRenderingMainWindow(QMainWindow):
         """PET 제거 처리"""
         self.pet_volume_data = None
         self.rendering_panel.vtk_renderer.clear_pet_volume()
+        self.slice_viewer.clear()
         self.statusBar().showMessage("PET volume cleared")
 
     def on_tf_changed(self, tf_array):
@@ -292,38 +290,10 @@ class VolumeRenderingMainWindow(QMainWindow):
 
     # ── OSVRA Pipeline ──────────────────────────────────────────
 
-    def _update_osvra_preview(self, axis_name: str, slice_index: int):
-        """SOI 파라미터 변경 시 PET TF 적용된 RGBA 슬라이스 미리보기"""
-        if self.pet_volume_data is None:
-            return
-        try:
-            soi = SOIPlaneBuilder.build_axis_aligned(
-                axis_name=axis_name,
-                slice_index=slice_index,
-                pet_volume=self.pet_volume_data,
-                pet_spacing=self.pet_voxel_spacing,
-            )
-            # PET TF 노드로 LUT 빌드 → RGBA 변환
-            pet_tf_nodes = self.tf_panel.pet_tf_widget.get_nodes()
-            opacity_lut, color_lut = VolumeBridge.build_tf_luts(pet_tf_nodes)
-
-            pet_slice = soi.pet_slice  # (H, W) float [0,1]
-            lut_idx = np.clip((pet_slice * 255).astype(np.int32), 0, 255)
-            h, w = pet_slice.shape
-            rgba = np.zeros((h, w, 4), dtype=np.float32)
-            rgba[..., :3] = color_lut[lut_idx]
-            rgba[..., 3] = opacity_lut[lut_idx]
-
-            self.osvra_panel.slice_preview.display_preview(rgba)
-        except Exception as e:
-            print(f"OSVRA preview error: {e}")
-
-    def _on_pet_tf_changed_for_preview(self, tf_array):
-        """PET TF 변경 시 SOI 미리보기 갱신"""
-        self._update_osvra_preview(
-            self.osvra_panel.current_axis,
-            self.osvra_panel.current_slice,
-        )
+    def _on_osvra_soi_changed(self, axis_name: str, slice_index: int):
+        """OSVRA panel SOI 변경 → slice_panel 동기화"""
+        if hasattr(self, 'slice_viewer') and self.slice_viewer._has_data:
+            self.slice_viewer.set_axis_and_index(axis_name, slice_index)
 
     def _on_osvra_fusion_ratio_changed(self, ratio):
         """Fusion ratio 변경 시 기존 결과를 재합성"""
@@ -363,11 +333,17 @@ class VolumeRenderingMainWindow(QMainWindow):
                 ct_volume=self.volume_data,
                 ct_spacing=self.voxel_spacing,
             )
+            print(f"\n{'='*60}")
+            print(f"[OSVRA-DEBUG] SOI: {soi.axis_name} slice {soi.slice_index}")
+            print(f"[OSVRA-DEBUG]   origin={soi.origin}, normal={soi.normal}")
+            print(f"[OSVRA-DEBUG]   resolution={soi.resolution}, pixel_spacing={soi.pixel_spacing}")
+            print(f"[OSVRA-DEBUG]   pet_slice range=[{soi.pet_slice.min():.4f}, {soi.pet_slice.max():.4f}]")
             self.osvra_panel.set_progress(20)
             QApplication.processEvents()
 
             # 2. SOI normal 기반 view direction (카메라 무관, SOI 평면에 수직)
             view_dir = -soi.normal.astype(np.float64)
+            print(f"[OSVRA-DEBUG]   view_dir={view_dir}")
 
             # 3. CT TF 노드 가져오기
             ct_tf_nodes = self.tf_panel.ct_tf_widget.get_nodes()
@@ -381,6 +357,10 @@ class VolumeRenderingMainWindow(QMainWindow):
                 sample_step_mm=self.osvra_panel.sample_step,
             )
             depth_map, valid_mask = depth_computer.compute(soi, view_dir)
+            print(f"[OSVRA-DEBUG] DepthMap: valid={valid_mask.sum()}/{valid_mask.size} ({100*valid_mask.mean():.1f}%)")
+            if valid_mask.any():
+                print(f"[OSVRA-DEBUG]   range=[{np.nanmin(depth_map[valid_mask]):.1f}, {np.nanmax(depth_map[valid_mask]):.1f}] mm")
+                print(f"[OSVRA-DEBUG]   mean={np.nanmean(depth_map[valid_mask]):.1f} mm")
             self.osvra_panel.set_progress(50)
             QApplication.processEvents()
 
@@ -391,13 +371,21 @@ class VolumeRenderingMainWindow(QMainWindow):
             hist_result = analyzer.analyze(depth_map, valid_mask)
             self.osvra_panel.display_histogram(hist_result)
 
+            print(f"[OSVRA-DEBUG] Histogram peaks: {hist_result['peak_distances']}")
+            print(f"[OSVRA-DEBUG]   default_D={hist_result['default_D']:.1f} mm")
+
             # D 값 결정 (peak 또는 manual)
             D = self.osvra_panel.current_D
+            print(f"[OSVRA-DEBUG]   selected D={D:.1f} mm")
             self.osvra_panel.set_progress(60)
             QApplication.processEvents()
 
             # 6. Logistic weight 생성
             weight_func = LogisticWeightFunction(D=D)
+            print(f"[OSVRA-DEBUG] LogisticWeight: D={D:.1f}, B={weight_func.B:.6f}")
+            test_d = np.array([0.0, D/2, D, 2*D])
+            test_w = weight_func(test_d)
+            print(f"[OSVRA-DEBUG]   w(0)={test_w[0]:.6f}, w(D/2)={test_w[1]:.6f}, w(D)={test_w[2]:.6f}, w(2D)={test_w[3]:.6f}")
 
             # 7. Weighted CT augmentation
             ct_renderer = OSVRACTRenderer(
@@ -407,6 +395,8 @@ class VolumeRenderingMainWindow(QMainWindow):
                 sample_step_mm=self.osvra_panel.sample_step,
             )
             ct_aug = ct_renderer.render(soi, view_dir, weight_func)
+            print(f"[OSVRA-DEBUG] CT Aug: alpha mean={ct_aug[:,:,3].mean():.4f}, max={ct_aug[:,:,3].max():.4f}")
+            print(f"[OSVRA-DEBUG]   non-zero alpha: {(ct_aug[:,:,3]>0.01).sum()}/{ct_aug.shape[0]*ct_aug.shape[1]}")
             self.osvra_panel.set_progress(90)
             QApplication.processEvents()
 
@@ -426,6 +416,9 @@ class VolumeRenderingMainWindow(QMainWindow):
                 ct_aug_rgba=ct_aug,
                 fusion_ratio=self.osvra_panel.fusion_ratio,
             )
+
+            print(f"[OSVRA-DEBUG] Fused: range=[{fused.min():.4f}, {fused.max():.4f}]")
+            print(f"{'='*60}\n")
 
             # 캐시 저장 (fusion ratio 변경 시 재사용)
             self._osvra_last_ct_aug = ct_aug

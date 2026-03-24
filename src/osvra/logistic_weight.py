@@ -1,7 +1,7 @@
 """
 Phase 4: Logistic Weight 함수
 D를 inflection point로 하는 inverted logistic curve
-논문 식: w(d) = C / (1 + A * exp(B * d))
+논문 식: w(d) = C / (1 + A * exp(-B * d))
 """
 
 import numpy as np
@@ -10,7 +10,7 @@ import numpy as np
 class LogisticWeightFunction:
     """Inverted logistic weight function
 
-    w(d) = C / (1 + A * exp(B * d))
+    w(d) = C / (1 + A * exp(-B * d))
 
     Parameters:
         D: inflection point distance (mm)
@@ -40,7 +40,7 @@ class LogisticWeightFunction:
             weights array, same shape as distances
         """
         distances = np.asarray(distances, dtype=np.float64)
-        return self.C / (1.0 + self.A * np.exp(self.B * distances))
+        return self.C / (1.0 + self.A * np.exp(-self.B * distances))
 
     def as_lut(self, max_distance: float, num_entries: int = 1024) -> tuple:
         """사전 계산된 LUT 반환

@@ -48,6 +48,8 @@ resources/masks/
 resources/Rendered_Image/
 resources/Points/
 resources/Volume_Data/*.raw
+resources/Volume_Data/*.nii
+resources/OSVRA_debug
 # macOS metadata
 .DS_Store
 **/.DS_Store

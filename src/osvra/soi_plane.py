@@ -101,7 +101,7 @@ class SOIPlaneBuilder:
             u_axis = np.array([1.0, 0.0, 0.0])
             v_axis = np.array([0.0, 1.0, 0.0])
             resolution = (Y, X)  # (height, width)
-            pixel_spacing = (sy, sx)
+            pixel_spacing = (sx, sy)
             pet_slice = pet_volume[:, :, idx].T  # (X,Y) -> (Y,X)
 
         elif axis_name == "Coronal":
@@ -112,7 +112,7 @@ class SOIPlaneBuilder:
             u_axis = np.array([1.0, 0.0, 0.0])
             v_axis = np.array([0.0, 0.0, 1.0])
             resolution = (Z, X)  # (height, width)
-            pixel_spacing = (sz, sx)
+            pixel_spacing = (sx, sz)
             pet_slice = pet_volume[:, idx, :].T  # (X,Z) -> (Z,X)
 
         elif axis_name == "Sagittal":
@@ -123,7 +123,7 @@ class SOIPlaneBuilder:
             u_axis = np.array([0.0, 1.0, 0.0])
             v_axis = np.array([0.0, 0.0, 1.0])
             resolution = (Z, Y)  # (height, width)
-            pixel_spacing = (sz, sy)
+            pixel_spacing = (sy, sz)
             pet_slice = pet_volume[idx, :, :]  # (Y,Z)
 
         else:
